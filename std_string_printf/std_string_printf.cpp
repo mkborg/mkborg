@@ -32,35 +32,58 @@ std_string_printf(const char * format, ...)
 
 // Note: On buffer overflow some ancient "vsnprintf" implementations may
 // return -1 instead of size necessary for complete output.
-#define STRING_VPRINTF_INITIAL_BUFSIZE 0x1000
+
+// Minimal buffer must have space at least for terminating '\0'
+#define MINIMAL_BUFSIZE 1
+
+// Initial guess must cover frequent cases
+#define INITIAL_GUESS_BUFSIZE 0x1000
+
 std::string
 std_string_vprintf(const char * format, va_list args)
 {
     std::string s;
+    va_list args_copy;
     size_t buf_size; // including trailing '\0'
+    int result;
 
-    // Let's determine size of buffer necessary to consume complete output.
-    // To speed-up below loop let's start with big enough buffer.
-    buf_size = STRING_VPRINTF_INITIAL_BUFSIZE;
-    for(;;) {
-	va_list args_copy;
-	int result;
-
-	// Note: 'reserve()' doesn't change 'size()'
-	s.reserve(buf_size);
-
+    // We need to determine size of buffer necessary to fit complete output.
+    // Let's assume modern 'vsnprintf' always returning size necessary for
+    // complete output. In such case we can use very small local buffer.
+    {
+	char small_buffer[MINIMAL_BUFSIZE];
 	va_copy(args_copy, args);
-	result = vsnprintf(&s[0], buf_size, format, args_copy);
+	result = vsnprintf(small_buffer, sizeof(small_buffer), format, args_copy);
 	va_end(args_copy);
-
-	if (result < 0) { // buffer overflow report from old glibc
-	    buf_size *= 2; continue; // try again with bigger buffer
-	}
-
-	// "result" doesn't include trailing '\0'
-	buf_size = result + 1; // one extra byte for trailing '\0'
-	break;
     }
+    if (result < 0) {
+	// Buffer overflow report from old glibc.
+	// We need real buffer big enough to fit complete output.
+	// We have to guess and check iteratively.
+	// To speed-up below loop let's start with reasonable big buffer.
+	buf_size = INITIAL_GUESS_BUFSIZE;
+	for(;;) {
+	    // allocate storage
+	    // Note: 'reserve()' doesn't change 'size()'
+	    // Note: 'resize()' fills additional space with '\0' (initially
+	    // 'size()' is zero).
+	    // Note: 'reserve()' shall be faster than 'resize()' but final
+	    // 'vsnprintf()' can be avoided if 'resize()' is used here.
+	    s.reserve(buf_size);
+
+	    va_copy(args_copy, args);
+	    result = vsnprintf(&s[0], buf_size, format, args_copy);
+	    va_end(args_copy);
+
+	    if (result >= 0) { break; } // success
+
+	    buf_size *= 2; // try again with bigger buffer
+
+	    // FIXME: need to check for some reasonable upper limit
+	}
+    }
+    // "result" doesn't include trailing '\0'
+    buf_size = result + 1; // one extra byte for trailing '\0'
 
     // allocate necessary storage
     // Note: Initially 'size()' is zero and resize() fills string with '\0'
